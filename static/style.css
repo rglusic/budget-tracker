@@ -102,6 +102,9 @@ input[type="search"], input[type="text"], input[type="number"] {
 .viewtoggle button.active { color: var(--accent); font-weight: 600; border-color: var(--accent); }
 /* bill status pills */
 .pill.bad { background: #fdeceb; color: var(--red); }
+/* on-card money = new debt, highlighted wherever it appears */
+.oncard { color: var(--amber); font-weight: 700; }
+.pill.card { background: #fff4e5; color: var(--amber); }
 /* plan view */
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--green); }
 .dot.card { background: var(--amber); }

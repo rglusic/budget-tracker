@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS accounts (
     plaid_account_id TEXT UNIQUE,
     name             TEXT NOT NULL,
     mask             TEXT,
-    type             TEXT NOT NULL CHECK (type IN ('checking','savings','credit','loan','other')),
+    type             TEXT NOT NULL CHECK (type IN ('checking','savings','depository','credit','loan','other')),
     balance_cents    INTEGER NOT NULL DEFAULT 0,
     available_cents  INTEGER,
     limit_cents      INTEGER,

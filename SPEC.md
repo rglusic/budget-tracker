@@ -2,7 +2,7 @@
 
 A private, personal budgeting web app replacing YNAB. Bills-first
 budgeting from actual cash balances: fixed obligations get computed
-statuses (paid / covered / short) from the bills calendar, and only the
+statuses (paid / covered / deferred) from the bills calendar, and only the
 categories where spending decisions actually happen stay manual
 green/red envelopes. Mobile-first.
 
@@ -21,7 +21,11 @@ green/red envelopes. Mobile-first.
 
 - `accounts(id, plaid_account_id UNIQUE, name, mask, type, balance_cents,
   available_cents, limit_cents, last_synced_at, include_in_budget)`
-  - type in {checking, savings, credit, loan, other}
+  - type in {checking, savings, depository, credit, loan, other}
+  - Funding is computed from the type, never from names: checking /
+    savings / depository accounts are **cash**; credit accounts are
+    **card**. Every outflow is therefore either spent cash or new debt,
+    and the UI says which — everywhere money goes out.
 - `transactions(id, plaid_txn_id UNIQUE, account_id, date, merchant, name,
   amount_cents, category_id, pending, is_transfer, created_at)`
   - amount_cents: negative = outflow, positive = inflow (matches Plaid/YANB sign)
@@ -64,19 +68,26 @@ green/red envelopes. Mobile-first.
    bumps a payee_rule. Show "suggested" badge when a rule matches.
 3. **Budget** — two views of one model:
    - **Today**: a "This month" strip (Cash on hand / Paid this month /
-     Still due this month), a Safe-to-spend headline (cash minus unpaid
-     cash bills due on/before the next paycheck), every bill with a computed
-     status — Paid (green, with the paid date) / Covered / Short (names the
-     paycheck that covers it) / On card — and the envelope categories as
-     manual green/red rows with assign steppers. Month switcher for review.
+     Still due this month / Put on cards this month — the month's total
+     charges to credit accounts, i.e. new debt), a Safe-to-spend headline
+     (cash minus unpaid cash bills due on/before the next paycheck), every
+     bill with a computed status and its funding — Paid · cash (green,
+     with the paid date) / Paid · on card (names the card the payment
+     landed on) / Covered · cash on hand / Deferred → the paycheck date
+     that funds it / On card — and the envelope categories as manual
+     green/red rows with assign steppers. Each envelope row also splits
+     its spent into cash vs on card (`spent_cash_cents` /
+     `spent_card_cents`), the on-card part highlighted as new debt.
+     Month switcher for review.
    - **Plan**: the paycheck schedule (next paydays projected from the
      stored pattern), a day-by-day projected cash-balance forecast with the
      lowest point highlighted, and a bills calendar where each bill's name,
      amount, due date, frequency, autopay, account label, and linked
      category can be added/edited/deleted.
 4. **Bills** — sorted by next due date. Each: amount, due day/date, autopay
-   badge + source, last paid. Toggle autopay, mark paid. Top section:
-   "Due before next paycheck".
+   badge + source, last paid, and the same status/funding pill as the
+   Budget tab (Paid · cash / Paid · on card / Covered / Deferred). Toggle
+   autopay, mark paid. Top section: "Due before next paycheck".
 5. **Debts** — balance, APR, minimum, payoff order with progress bars;
    totals: monthly minimums, est. monthly interest.
 
@@ -94,6 +105,11 @@ green/red envelopes. Mobile-first.
   stores the payday anchor + cadence + explicit projection pattern
 - `upsert_debt`, `update_debt_balance` {debt_id, balance_cents}
 - `get_overview`, `get_inbox`, `get_budget` {month}, `get_bills`, `get_debts`
+  - `get_budget` rows carry `spent_cash_cents` / `spent_card_cents`
+    (cash + card = spent on cash/credit accounts); month summaries carry
+    `put_on_cards_cents` (all non-transfer outflows on credit accounts);
+    every bill carries `status`, `funding` ("cash" | "card" | null) and
+    `funding_account` (the account name the money came from)
 - `get_bill_plan` → Today/Plan payload: month summary, paycheck schedule,
   bill statuses, cash-balance forecast
 

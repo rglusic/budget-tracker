@@ -184,12 +184,15 @@ def test_bill_plan():
     plan = actions.get_bill_plan(conn)
     by_name = {b["name"]: b for b in plan["bills"]}
 
-    # --- statuses: paid (matched txn) / covered / card / short
+    # --- statuses: paid (matched txn) / covered / card / deferred
     assert by_name["Test Electric"]["status"] == "paid", by_name["Test Electric"]
     assert by_name["Test Electric"]["paid_date"] == _TODAY.isoformat()
+    # the electric payment came off the checking account -> paid in cash
+    assert by_name["Test Electric"]["funding"] == "cash", by_name["Test Electric"]
+    assert by_name["Test Electric"]["funding_account"] == "Test Checking"
     assert by_name["Test Water"]["status"] == "covered", by_name["Test Water"]
     assert by_name["Test Card Bill"]["status"] == "card", by_name["Test Card Bill"]
-    assert by_name["Test Big Bill"]["status"] == "short", by_name["Test Big Bill"]
+    assert by_name["Test Big Bill"]["status"] == "deferred", by_name["Test Big Bill"]
     assert by_name["Test Big Bill"]["covering_paycheck_date"] == paycheck_date
 
     # --- This month strip: paid excludes transfers; still due skips paid bills
@@ -251,6 +254,120 @@ def test_bill_plan():
     print("BILL PLAN TESTS PASSED")
 
 
+def test_funding_split():
+    """Cash vs on-card funding: envelope spent split, bill funding, and the
+    'put on cards this month' roll-up. All fixtures fictional."""
+    import json
+    conn = fresh()
+    month = _TODAY.strftime("%Y-%m")
+    today = _TODAY.isoformat()
+    paycheck_date = (_TODAY + _dt.timedelta(days=10)).isoformat()
+    due_soon = min(28, _TODAY.day + 3)
+    actions.import_seed(conn, {
+        "accounts": [
+            {"plaid_account_id": "f-check", "name": "Test Checking",
+             "mask": "1001", "type": "checking", "balance_cents": 50000},
+            {"plaid_account_id": "f-save", "name": "Test Savings",
+             "mask": "1002", "type": "savings", "balance_cents": 10000},
+            {"plaid_account_id": "f-dep", "name": "Test Depository",
+             "mask": "1003", "type": "depository", "balance_cents": 5000},
+            {"plaid_account_id": "f-card", "name": "Test Visa Card",
+             "mask": "1004", "type": "credit", "balance_cents": -20000},
+        ],
+        "categories": [
+            {"name": "Test Food", "grp": "Frequent", "sort_order": 1},
+            {"name": "Test Electric", "grp": "Bills", "sort_order": 2},
+            {"name": "Test Stream", "grp": "Bills", "sort_order": 3},
+        ],
+        "transactions": [
+            # envelope spending across every account kind
+            {"plaid_txn_id": "f-t1", "account_id": "f-check", "date": today,
+             "merchant": "Test Market", "amount_cents": -3000,
+             "category_id": "Test Food"},
+            {"plaid_txn_id": "f-t2", "account_id": "f-save", "date": today,
+             "merchant": "Test Market", "amount_cents": -2000,
+             "category_id": "Test Food"},
+            {"plaid_txn_id": "f-t3", "account_id": "f-dep", "date": today,
+             "merchant": "Test Market", "amount_cents": -500,
+             "category_id": "Test Food"},
+            {"plaid_txn_id": "f-t4", "account_id": "f-card", "date": today,
+             "merchant": "Test Diner", "amount_cents": -1200,
+             "category_id": "Test Food"},
+            # bill payments: electric from checking, streaming from the card
+            {"plaid_txn_id": "f-t5", "account_id": "f-check", "date": today,
+             "merchant": "Test Electric Co", "amount_cents": -8000,
+             "category_id": "Test Electric"},
+            {"plaid_txn_id": "f-t6", "account_id": "f-card", "date": today,
+             "merchant": "Test Stream Co", "amount_cents": -1500,
+             "category_id": "Test Stream"},
+            # an uncategorized card charge still counts as money on cards
+            {"plaid_txn_id": "f-t7", "account_id": "f-card", "date": today,
+             "merchant": "Test Shop", "amount_cents": -700, "category_id": None},
+            # a flagged transfer on the card is not a charge
+            {"plaid_txn_id": "f-t8", "account_id": "f-card", "date": today,
+             "merchant": "Test Shuffle", "amount_cents": -999,
+             "category_id": None, "is_transfer": 1},
+        ],
+        "bills": [
+            {"name": "Test Electric", "amount_cents": 8000, "due_day": due_soon,
+             "frequency": "monthly", "autopay": 1,
+             "autopay_from": "Test Checking", "category": "Test Electric"},
+            {"name": "Test Stream", "amount_cents": 1500, "due_day": due_soon,
+             "frequency": "monthly", "autopay": 1,
+             "autopay_from": "Test Visa 1234", "category": "Test Stream"},
+            {"name": "Test Rent", "amount_cents": 40000, "due_day": due_soon,
+             "frequency": "monthly", "autopay": 0,
+             "autopay_from": "Test Checking"},
+            {"name": "Test Huge", "amount_cents": 500000,
+             "due_day": min(28, due_soon + 1), "frequency": "monthly",
+             "autopay": 0, "autopay_from": "Test Checking"},
+        ],
+        "meta": {
+            "next_paycheck_date": paycheck_date,
+            "next_paycheck_amount_cents": "100000",
+            "paycheck_cadence": "biweekly",
+            "envelope_categories": json.dumps(["Test Food"]),
+        },
+    })
+
+    # --- envelope split: cash = checking + savings + depository spellings
+    b = actions.get_budget(conn, month)
+    food = [c for g in b["groups"] for c in g["categories"]
+            if c["name"] == "Test Food"][0]
+    assert food["spent_cents"] == 6700, food
+    assert food["spent_cash_cents"] == 3000 + 2000 + 500, food
+    assert food["spent_card_cents"] == 1200, food
+    assert food["spent_cash_cents"] + food["spent_card_cents"] == food["spent_cents"]
+
+    # --- cash on hand counts every cash spelling (50000+10000+5000)
+    assert b["summary"]["cash_on_hand_cents"] == 65000, b["summary"]
+
+    # --- roll-up: card charges across envelope + bills + uncategorized,
+    # transfers excluded: 1200 + 1500 + 700
+    assert b["summary"]["put_on_cards_cents"] == 3400, b["summary"]
+
+    # --- bill funding
+    plan = actions.get_bill_plan(conn)
+    by_name = {x["name"]: x for x in plan["bills"]}
+    elec = by_name["Test Electric"]
+    assert elec["status"] == "paid" and elec["funding"] == "cash", elec
+    assert elec["funding_account"] == "Test Checking", elec
+    stream = by_name["Test Stream"]
+    assert stream["status"] == "paid" and stream["funding"] == "card", stream
+    assert stream["funding_account"] == "Test Visa Card", stream
+    assert by_name["Test Rent"]["status"] == "covered", by_name["Test Rent"]
+    huge = by_name["Test Huge"]
+    assert huge["status"] == "deferred", huge
+    assert huge["covering_paycheck_date"], huge
+
+    # --- get_bills carries the same status/funding
+    gb = {x["name"]: x for x in actions.get_bills(conn)["bills"]}
+    assert gb["Test Stream"]["funding"] == "card", gb["Test Stream"]
+    assert gb["Test Electric"]["funding"] == "cash", gb["Test Electric"]
+    print("FUNDING SPLIT TESTS PASSED")
+
+
 if __name__ == "__main__":
     test_seed_and_categorize()
     test_bill_plan()
+    test_funding_split()

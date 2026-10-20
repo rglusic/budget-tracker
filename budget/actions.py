@@ -186,6 +186,24 @@ def set_paycheck(conn, date: str, amount_cents: int | None = None,
             "paycheck_dates": [d.isoformat() for d in paycheck_dates(conn)]}
 
 
+# ------------------------------------------------------------- account kinds
+# Funding source is computed from the account TYPE, never from names or
+# labels: credit accounts are "card" funding; checking/savings-type accounts
+# are "cash". Plaid's generic "depository" spelling counts as cash too.
+
+_CASH_TYPES = ("checking", "savings", "depository")
+_CREDIT_TYPES = ("credit",)
+
+
+def _account_kind(account_type: str | None) -> str:
+    t = (account_type or "").lower()
+    if t in _CREDIT_TYPES:
+        return "card"
+    if t in _CASH_TYPES:
+        return "cash"
+    return "other"
+
+
 # ---------------------------------------------------------------- budget math
 
 def _spent_cents(conn, category_id: int, month: str) -> int:
@@ -198,6 +216,25 @@ def _spent_cents(conn, category_id: int, month: str) -> int:
         (category_id, month),
     ).fetchone()
     return int(r["spent"] - r["inflow"])
+
+
+def _spent_split_cents(conn, category_id: int, month: str) -> tuple[int, int]:
+    """(cash_cents, card_cents): the category's net spent for YYYY-MM split
+    by funding source — outflows from cash (checking/savings-type) accounts
+    vs outflows from credit accounts (new debt). The two add up to
+    _spent_cents whenever the month's activity sits on cash/credit accounts.
+    """
+    cash_ph = ", ".join("?" for _ in _CASH_TYPES)
+    r = conn.execute(
+        f"""SELECT COALESCE(-SUM(CASE WHEN a.type IN ({cash_ph})
+                                      THEN t.amount_cents ELSE 0 END), 0) AS cash_spent,
+                   COALESCE(-SUM(CASE WHEN a.type = 'credit'
+                                      THEN t.amount_cents ELSE 0 END), 0) AS card_spent
+            FROM transactions t JOIN accounts a ON a.id = t.account_id
+            WHERE t.category_id = ? AND substr(t.date, 1, 7) = ?""",
+        (*_CASH_TYPES, category_id, month),
+    ).fetchone()
+    return int(r["cash_spent"]), int(r["card_spent"])
 
 
 def _assigned_cents(conn, category_id: int, month: str) -> int:
@@ -236,9 +273,11 @@ def category_available(conn, category_id: int, month: str, _memo: dict | None = 
 
 
 def _cash_cents(conn) -> int:
+    cash_ph = ", ".join("?" for _ in _CASH_TYPES)
     r = conn.execute(
-        """SELECT COALESCE(SUM(balance_cents), 0) AS c FROM accounts
-           WHERE include_in_budget = 1 AND type IN ('checking', 'savings')"""
+        f"""SELECT COALESCE(SUM(balance_cents), 0) AS c FROM accounts
+            WHERE include_in_budget = 1 AND type IN ({cash_ph})""",
+        _CASH_TYPES,
     ).fetchone()
     return int(r["c"])
 
@@ -391,11 +430,14 @@ def get_budget(conn, month: str | None = None) -> dict[str, Any]:
     for c in conn.execute("SELECT * FROM categories ORDER BY grp, sort_order, name").fetchall():
         assigned = _assigned_cents(conn, c["id"], month)
         spent = _spent_cents(conn, c["id"], month)
+        spent_cash, spent_card = _spent_split_cents(conn, c["id"], month)
         available = category_available(conn, c["id"], month, memo)
         row = {
             "id": c["id"], "name": c["name"], "grp": c["grp"],
             "assigned_cents": assigned, "assigned_display": _fmt_cents(assigned),
             "spent_cents": spent, "spent_display": _fmt_cents(spent),
+            "spent_cash_cents": spent_cash, "spent_cash_display": _fmt_cents(spent_cash),
+            "spent_card_cents": spent_card, "spent_card_display": _fmt_cents(spent_card),
             "available_cents": available, "available_display": _fmt_cents(available),
         }
         groups.setdefault(c["grp"], []).append(row)
@@ -578,25 +620,44 @@ def _is_card_label(label: str | None) -> bool:
     return any(h in low for h in _CARD_LABEL_HINTS)
 
 
-def _paid_match(conn, bill, month: str) -> str | None:
-    """Return the paid date if this bill was paid in `month`, else None.
+def _paid_match_info(conn, bill, month: str) -> dict | None:
+    """Payment details if this bill was paid in `month`, else None.
+
+    Returns {date, funding, funding_account}: funding is "cash" when the
+    money came from a checking/savings-type account and "card" when it was
+    charged to a credit account; funding_account names that account.
 
     A bill counts as paid when an outflow transaction in the bill's linked
-    category matches the bill amount exactly that month, or when it was
-    manually marked paid (last_paid_date) in the month.
+    category matches the bill amount exactly that month (funding read from
+    that transaction's account), or when it was manually marked paid
+    (last_paid_date) in the month — a manual mark has no transaction, so
+    its funding follows the bill's own account label.
     """
     if bill["last_paid_date"] and bill["last_paid_date"][:7] == month:
-        return bill["last_paid_date"]
+        if _is_card_label(bill["autopay_from"]):
+            return {"date": bill["last_paid_date"], "funding": "card",
+                    "funding_account": bill["autopay_from"]}
+        return {"date": bill["last_paid_date"], "funding": "cash",
+                "funding_account": bill["autopay_from"]}
     if bill["category_id"]:
         r = conn.execute(
-            """SELECT date FROM transactions
-               WHERE category_id = ? AND substr(date, 1, 7) = ? AND amount_cents = ?
-               ORDER BY date LIMIT 1""",
+            """SELECT t.date AS date, a.name AS account_name, a.type AS account_type
+               FROM transactions t JOIN accounts a ON a.id = t.account_id
+               WHERE t.category_id = ? AND substr(t.date, 1, 7) = ? AND t.amount_cents = ?
+               ORDER BY t.date LIMIT 1""",
             (bill["category_id"], month, -int(bill["amount_cents"])),
         ).fetchone()
         if r:
-            return r["date"]
+            return {"date": r["date"],
+                    "funding": "card" if _account_kind(r["account_type"]) == "card" else "cash",
+                    "funding_account": r["account_name"]}
     return None
+
+
+def _paid_match(conn, bill, month: str) -> str | None:
+    """Return the paid date if this bill was paid in `month`, else None."""
+    info = _paid_match_info(conn, bill, month)
+    return info["date"] if info else None
 
 
 def _covering_paycheck(conn, cash: int, amount: int) -> str | None:
@@ -616,10 +677,14 @@ def _covering_paycheck(conn, cash: int, amount: int) -> str | None:
 def bill_statuses(conn, month: str | None = None) -> list[dict]:
     """Each active bill with a computed status for `month`:
 
-    paid    — money already left (shows paid_date; renders green)
-    covered — cash on hand covers it (checked cumulatively in due-date order)
-    short   — cash is short; covering_paycheck_date names the payday that fixes it
-    card    — pulls from a card, not from cash
+    paid     — money already left (shows paid_date; renders green). Carries
+               funding ("cash" | "card") and funding_account: a card payment
+               is new debt, a cash payment is money gone.
+    covered  — unpaid, but cash on hand covers it
+    deferred — cash is short; the bill waits on a future paycheck and
+               covering_paycheck_date names the payday that funds it
+    card     — pulls from a card, not from cash (until its payment lands,
+               when it flips to paid with funding "card")
     """
     today = _today_la()
     month = month or today.strftime("%Y-%m")
@@ -629,7 +694,11 @@ def bill_statuses(conn, month: str | None = None) -> list[dict]:
     for r in rows:
         d = _bill_dict(conn, r, today)
         d["is_card"] = _is_card_label(r["autopay_from"])
-        d["paid_date"] = _paid_match(conn, r, month)
+        info = _paid_match_info(conn, r, month)
+        d["paid_date"] = info["date"] if info else None
+        d["funding"] = info["funding"] if info else ("card" if d["is_card"] else None)
+        d["funding_account"] = (info["funding_account"] if info
+                                else (r["autopay_from"] if d["is_card"] else None))
         d["status"] = "paid" if d["paid_date"] else ("card" if d["is_card"] else None)
         d["covering_paycheck_date"] = None
         bills.append(d)
@@ -641,7 +710,7 @@ def bill_statuses(conn, month: str | None = None) -> list[dict]:
             b["status"] = "covered"
             remaining -= b["amount_cents"]
         else:
-            b["status"] = "short"
+            b["status"] = "deferred"
             b["covering_paycheck_date"] = _covering_paycheck(conn, cash, b["amount_cents"])
     bills.sort(key=lambda b: (b["status"] != "paid", b["next_due_date"]))
     return bills
@@ -692,17 +761,34 @@ def _still_due_cents(conn, month: str) -> int:
     return total
 
 
+def _put_on_cards_cents(conn, month: str) -> int:
+    """Total charged to credit accounts in the month — every outflow that
+    landed on a card (envelope spending and bill payments alike), i.e. the
+    month's new debt. Transfers excluded."""
+    r = conn.execute(
+        """SELECT COALESCE(SUM(-t.amount_cents), 0) AS s
+           FROM transactions t JOIN accounts a ON a.id = t.account_id
+           WHERE substr(t.date, 1, 7) = ? AND t.amount_cents < 0
+             AND t.is_transfer = 0 AND a.type = 'credit'""",
+        (month,),
+    ).fetchone()
+    return int(r["s"])
+
+
 def month_summary(conn, month: str) -> dict[str, Any]:
-    """The 'This month' strip: cash on hand / paid / still due / safe to spend."""
+    """The 'This month' strip: cash on hand / paid / still due / safe to
+    spend / put on cards."""
     cash = _cash_cents(conn)
     paid = _paid_this_month_cents(conn, month)
     due = _still_due_cents(conn, month)
     safe = safe_to_spend_cents(conn)
+    cards = _put_on_cards_cents(conn, month)
     return {
         "cash_on_hand_cents": cash, "cash_on_hand_display": _fmt_cents(cash),
         "paid_this_month_cents": paid, "paid_this_month_display": _fmt_cents(paid),
         "still_due_this_month_cents": due, "still_due_this_month_display": _fmt_cents(due),
         "safe_to_spend_cents": safe, "safe_to_spend_display": _fmt_cents(safe),
+        "put_on_cards_cents": cards, "put_on_cards_display": _fmt_cents(cards),
     }
 
 
@@ -710,6 +796,15 @@ def get_bills(conn) -> dict[str, Any]:
     today = _today_la()
     rows = conn.execute("SELECT * FROM bills WHERE active=1").fetchall()
     bills = [_bill_dict(conn, r, today) for r in rows]
+    # Attach the same computed status/funding the Budget tab shows.
+    statuses = {b["id"]: b for b in bill_statuses(conn, today.strftime("%Y-%m"))}
+    for b in bills:
+        s = statuses.get(b["id"], {})
+        b["status"] = s.get("status")
+        b["paid_date"] = s.get("paid_date")
+        b["funding"] = s.get("funding")
+        b["funding_account"] = s.get("funding_account")
+        b["covering_paycheck_date"] = s.get("covering_paycheck_date")
     bills.sort(key=lambda b: b["next_due_date"])
     return {
         "today": today.isoformat(),

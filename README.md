@@ -21,12 +21,18 @@ state lives in a plain SQLite file instead of a black box.
   category before you tap anything. Suggestions get better the more you use it.
 - **Bills-first budgeting.** Most money is fixed obligations, so bills get
   computed statuses from their due dates instead of manual assignment: Paid
-  (green, with the date) / Covered / Short (naming the paycheck that covers
-  it) / On card. A "This month" strip shows Cash on hand, Paid this month,
-  and Still due this month, plus one headline number: **Safe to spend** =
-  cash minus unpaid cash bills due before the next paycheck. Only the
-  categories where you actually make spending decisions stay manual
-  green/red envelopes.
+  (green, with the date) / Covered / Deferred (naming the paycheck that
+  funds it) / On card. A "This month" strip shows Cash on hand, Paid this
+  month, Still due this month, and Put on cards this month, plus one
+  headline number: **Safe to spend** = cash minus unpaid cash bills due
+  before the next paycheck. Only the categories where you actually make
+  spending decisions stay manual green/red envelopes.
+- **Cash vs on-card, everywhere.** Red doesn't say where the money came
+  from, so every outflow carries its funding: each envelope splits its
+  spent into cash vs on card (the on-card part is highlighted — that's new
+  debt), each bill shows Paid · cash or Paid · on card naming the card,
+  and the strip totals the month under "Put on cards this month." Debt
+  chaining stops being invisible.
 - **Plan view with a forecast.** Paydays are data, not code: the schedule
   lives in settings (an anchor date plus a stored pattern), and the app
   projects checking balance day by day from paydays and bill due dates —
@@ -111,9 +117,9 @@ All endpoints are `POST /api/<action>` with a JSON body:
 | `upsert_debt` / `update_debt_balance` | debt fields / `debt_id`, `balance_cents` | Manage debts |
 | `get_overview` | — | Cash, debt, net, unassigned, accounts, bills due before payday |
 | `get_inbox` | — | Pending + uncategorized, with suggestions |
-| `get_budget` | `month` | Month summary strip, bill statuses, envelope Assigned / Spent / Available |
+| `get_budget` | `month` | Month summary strip (incl. put-on-cards), bill statuses + funding, envelope Assigned / Spent (cash + on-card split) / Available |
 | `get_bill_plan` | — | Paycheck schedule, bill statuses, day-by-day cash forecast |
-| `get_bills` | — | Bills sorted by next due date |
+| `get_bills` | — | Bills sorted by next due date, with status + funding |
 | `get_debts` | — | Debts in payoff order + totals |
 
 Read actions also accept GET.

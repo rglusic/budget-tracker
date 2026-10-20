@@ -127,13 +127,17 @@ function summaryStrip(s) {
     <div class="stat"><span class="muted small">Cash on hand</span><strong>${esc(s.cash_on_hand_display)}</strong></div>
     <div class="stat"><span class="muted small">Paid this month</span><strong>${esc(s.paid_this_month_display)}</strong></div>
     <div class="stat"><span class="muted small">Still due this month</span><strong>${esc(s.still_due_this_month_display)}</strong></div>
-  </div></div>`;
+    <div class="stat"><span class="muted small">Put on cards this month</span><strong class="oncard">${esc(s.put_on_cards_display)}</strong></div>
+  </div><div class="muted small">Put on cards = everything charged to a credit account this month. That's new debt, not spent cash.</div></div>`;
 }
 function billStatusRow(b) {
   let chip, cls = '';
-  if (b.status === 'paid') { chip = `Paid ${esc(b.paid_date || '')}`; cls = 'ok'; }
-  else if (b.status === 'covered') { chip = 'Covered'; cls = 'ok'; }
-  else if (b.status === 'short') { chip = `Short${b.covering_paycheck_date ? ' · covered by the ' + esc(b.covering_paycheck_date) + ' paycheck' : ''}`; cls = 'bad'; }
+  if (b.status === 'paid' && b.funding === 'card') {
+    chip = `Paid ${esc(b.paid_date || '')} · on card${b.funding_account ? ' · ' + esc(b.funding_account) : ''}`; cls = 'card';
+  }
+  else if (b.status === 'paid') { chip = `Paid ${esc(b.paid_date || '')} · cash`; cls = 'ok'; }
+  else if (b.status === 'covered') { chip = 'Covered · cash on hand'; cls = 'ok'; }
+  else if (b.status === 'deferred') { chip = `Deferred${b.covering_paycheck_date ? ' → ' + esc(b.covering_paycheck_date) + ' paycheck' : ''}`; cls = 'bad'; }
   else { chip = "On card · doesn't use cash"; cls = 'warn'; }
   return `<div class="txn"><div class="top"><span>${esc(b.name)}</span><strong>${esc(b.amount_display)}</strong></div>
     <div class="sub">Due ${esc(b.next_due_date)}${b.autopay ? ' · autopay' : ''}${b.autopay_from ? ' · from ' + esc(b.autopay_from) : ''}</div>
@@ -163,7 +167,7 @@ async function renderBudget() {
   for (const c of b.envelopes) {
     html += `<div class="txn">
         <div class="top"><span>${esc(c.name)}</span><strong class="${c.available_cents < 0 ? 'neg' : 'pos'}">${esc(c.available_display)}</strong></div>
-        <div class="sub">Assigned ${esc(c.assigned_display)} · Spent ${esc(c.spent_display)}</div>
+        <div class="sub">Assigned ${esc(c.assigned_display)} · Spent ${esc(c.spent_display)} — cash ${esc(c.spent_cash_display)} · <span class="oncard">on card ${esc(c.spent_card_display)}</span></div>
         <div class="stepper" data-cat="${c.id}">
           <button data-d="-1000">−$10</button><button data-d="-100">−$1</button>
           <button data-d="100">+$1</button><button data-d="1000">+$10</button>
@@ -328,8 +332,17 @@ async function renderBills() {
     };
   });
 }
+function fundingPill(b) {
+  if (!b.status) return '';
+  if (b.status === 'paid' && b.funding === 'card') return `<span class="pill card">Paid · on card${b.funding_account ? ' · ' + esc(b.funding_account) : ''}</span>`;
+  if (b.status === 'paid') return '<span class="pill ok">Paid · cash</span>';
+  if (b.status === 'covered') return '<span class="pill ok">Covered · cash on hand</span>';
+  if (b.status === 'deferred') return `<span class="pill bad">Deferred${b.covering_paycheck_date ? ' → ' + esc(b.covering_paycheck_date) + ' paycheck' : ''}</span>`;
+  if (b.status === 'card') return '<span class="pill warn">On card</span>';
+  return '';
+}
 function billRow(b, compact) {
-  return `<div class="txn"><div class="top"><span>${esc(b.name)}${b.autopay ? '<span class="pill ok">autopay</span>' : ''}</span><strong>${esc(b.amount_display)}</strong></div>
+  return `<div class="txn"><div class="top"><span>${esc(b.name)}${b.autopay ? '<span class="pill ok">autopay</span>' : ''}${fundingPill(b)}</span><strong>${esc(b.amount_display)}</strong></div>
     <div class="sub">Due ${esc(b.next_due_date)}${b.autopay_from ? ' · from ' + esc(b.autopay_from) : ''}${b.last_paid_date ? ' · last paid ' + esc(b.last_paid_date) : ''}</div>
     ${compact ? '' : `<div class="stepper"><button data-paid="${b.id}">Mark paid</button></div>`}</div>`;
 }
