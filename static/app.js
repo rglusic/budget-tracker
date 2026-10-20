@@ -1,7 +1,7 @@
 /* Budget Tracker — single-page UI. Vanilla JS, no build step. */
 const view = document.getElementById('view');
 const badge = document.getElementById('inbox-badge');
-let state = { tab: 'overview', budgetMonth: null };
+let state = { tab: 'overview', budgetMonth: null, budgetView: 'today' };
 
 async function api(name, args) {
   const r = await fetch('/api/' + name, {
@@ -121,35 +121,62 @@ async function renderInbox() {
   });
 }
 
-/* ---------------- Budget ---------------- */
+/* ---------------- Budget: Today + Plan views ---------------- */
+function summaryStrip(s) {
+  return `<div class="card"><h2>This month</h2><div class="strip">
+    <div class="stat"><span class="muted small">Cash on hand</span><strong>${esc(s.cash_on_hand_display)}</strong></div>
+    <div class="stat"><span class="muted small">Paid this month</span><strong>${esc(s.paid_this_month_display)}</strong></div>
+    <div class="stat"><span class="muted small">Still due this month</span><strong>${esc(s.still_due_this_month_display)}</strong></div>
+  </div></div>`;
+}
+function billStatusRow(b) {
+  let chip, cls = '';
+  if (b.status === 'paid') { chip = `Paid ${esc(b.paid_date || '')}`; cls = 'ok'; }
+  else if (b.status === 'covered') { chip = 'Covered'; cls = 'ok'; }
+  else if (b.status === 'short') { chip = `Short${b.covering_paycheck_date ? ' · covered by the ' + esc(b.covering_paycheck_date) + ' paycheck' : ''}`; cls = 'bad'; }
+  else { chip = "On card · doesn't use cash"; cls = 'warn'; }
+  return `<div class="txn"><div class="top"><span>${esc(b.name)}</span><strong>${esc(b.amount_display)}</strong></div>
+    <div class="sub">Due ${esc(b.next_due_date)}${b.autopay ? ' · autopay' : ''}${b.autopay_from ? ' · from ' + esc(b.autopay_from) : ''}</div>
+    <div><span class="pill ${cls}">${chip}</span></div></div>`;
+}
 async function renderBudget() {
   view.innerHTML = '<div class="loading">Loading…</div>';
+  if (state.budgetView === 'plan') return renderPlan();
   const b = await api('get_budget', state.budgetMonth ? { month: state.budgetMonth } : {});
   state.budgetMonth = b.month;
+  const s = b.summary;
   let html = `<div class="monthbar">
       <button id="m-prev">‹ ${esc(b.prev_month)}</button>
       <strong>${esc(b.month)}</strong>
       <button id="m-next">${esc(b.next_month)} ›</button>
     </div>
-    <div class="card"><div class="row"><span class="muted">Unassigned</span>
-      <strong class="${b.unassigned_cents < 0 ? 'neg' : 'pos'}">${esc(b.unassigned_display)}</strong></div></div>`;
-  for (const g of b.groups) {
-    html += `<div class="card"><h2>${esc(g.name)}</h2>`;
-    for (const c of g.categories) {
-      html += `<div class="txn">
-        <div class="top"><span>${esc(c.name)}</span><strong class="${c.available_cents < 0 ? 'neg' : ''}">${esc(c.available_display)}</strong></div>
+    <div class="viewtoggle">
+      <button data-v="today" class="active">Today</button><button data-v="plan">Plan</button>
+    </div>
+    ${summaryStrip(s)}
+    <div class="card"><div class="row"><span class="muted">Safe to spend</span>
+      <span class="big ${s.safe_to_spend_cents != null && s.safe_to_spend_cents < 0 ? 'neg' : 'pos'}">${esc(s.safe_to_spend_display)}</span></div>
+      <div class="muted small">Cash on hand minus cash bills due before the next paycheck. Card bills don't count — they never touch checking.</div></div>
+    <div class="card"><h2>Bills</h2>`;
+  for (const bill of b.bills) html += billStatusRow(bill);
+  html += `</div><div class="card"><h2>Envelopes</h2>`;
+  for (const c of b.envelopes) {
+    html += `<div class="txn">
+        <div class="top"><span>${esc(c.name)}</span><strong class="${c.available_cents < 0 ? 'neg' : 'pos'}">${esc(c.available_display)}</strong></div>
         <div class="sub">Assigned ${esc(c.assigned_display)} · Spent ${esc(c.spent_display)}</div>
         <div class="stepper" data-cat="${c.id}">
           <button data-d="-1000">−$10</button><button data-d="-100">−$1</button>
           <button data-d="100">+$1</button><button data-d="1000">+$10</button>
         </div>
       </div>`;
-    }
-    html += '</div>';
   }
+  html += '</div>';
   view.innerHTML = html;
   document.getElementById('m-prev').onclick = () => { state.budgetMonth = b.prev_month; renderBudget(); };
   document.getElementById('m-next').onclick = () => { state.budgetMonth = b.next_month; renderBudget(); };
+  view.querySelectorAll('.viewtoggle button').forEach(btn => {
+    btn.onclick = () => { state.budgetView = btn.dataset.v; renderBudget(); };
+  });
   view.querySelectorAll('.stepper button').forEach(btn => {
     btn.onclick = async () => {
       const catId = +btn.parentElement.dataset.cat;
@@ -158,6 +185,123 @@ async function renderBudget() {
         await api('assign_budget', { month: b.month, category_id: catId, amount_cents: +btn.dataset.d });
         renderBudget();
       } catch (err) { alert(err.message); btn.disabled = false; }
+    };
+  });
+}
+
+/* ---------------- Plan view ---------------- */
+async function renderPlan() {
+  view.innerHTML = '<div class="loading">Loading…</div>';
+  const p = await api('get_bill_plan');
+  const pay = p.paycheck;
+  let html = `<div class="viewtoggle">
+      <button data-v="today">Today</button><button data-v="plan" class="active">Plan</button>
+    </div>
+    <div class="card"><h2>Paychecks</h2>
+      <div class="sub">Next: ${esc(pay.next_date || 'not set')}${pay.amount_cents != null ? ' · ' + esc(pay.amount_display) : ''}${pay.cadence ? ' · ' + esc(pay.cadence) : ''}</div>
+      <div class="sub">Coming up: ${p.paycheck_dates.map(esc).join(' · ') || '—'}</div>
+      <form id="pay-form">
+        <label class="small muted">Next payday</label>
+        <input type="date" id="pay-date" value="${esc(pay.next_date || '')}" required>
+        <label class="small muted">Amount ($)</label>
+        <input type="number" id="pay-amount" step="0.01" value="${pay.amount_cents != null ? (pay.amount_cents / 100) : ''}">
+        <label class="small muted">Cadence</label>
+        <select id="pay-cadence">
+          ${['semi-monthly', 'biweekly', 'weekly', 'monthly'].map(c => `<option value="${c}"${pay.cadence === c ? ' selected' : ''}>${c}</option>`).join('')}
+        </select>
+        <label class="small muted">Paydays of month (semi-monthly / monthly, comma-separated; 31 = last day)</label>
+        <input type="text" id="pay-days" placeholder="e.g. 15, 31" value="${pay.pattern && pay.pattern.type === 'month_days' ? esc(pay.pattern.days.join(', ')) : ''}">
+        <button type="submit">Save paycheck schedule</button>
+      </form>
+    </div>
+    <div class="card"><h2>Forecast</h2>
+      <div class="sub">Projected cash balance, day by day. Lowest point: <strong class="${p.forecast.lowest && p.forecast.lowest.balance_cents < 0 ? 'neg' : ''}">${esc(p.forecast.lowest ? p.forecast.lowest.balance_display + ' on ' + p.forecast.lowest.date : '—')}</strong></div>
+      <div class="fc">`;
+  for (const pt of p.forecast.days) {
+    const isLow = p.forecast.lowest && pt.date === p.forecast.lowest.date;
+    html += `<div class="fcrow${isLow ? ' low' : ''}"><span>${esc(pt.date)}</span><strong class="${pt.balance_cents < 0 ? 'neg' : ''}">${esc(pt.balance_display)}</strong></div>`;
+  }
+  html += `</div></div>
+    <div class="card"><h2>Bills calendar</h2>`;
+  for (const b of p.bills) {
+    html += `<div class="txn"><div class="top"><span><span class="dot ${b.is_card ? 'card' : 'cash'}"></span>${esc(b.name)}</span><strong>${esc(b.amount_display)}</strong></div>
+      <div class="sub">Due ${esc(b.next_due_date)} · ${esc(b.frequency)}${b.autopay ? ' · autopay' : ''}${b.autopay_from ? ' · from ' + esc(b.autopay_from) : ''}</div>
+      <div class="stepper"><button data-edit="${b.id}">Edit</button></div>
+      <form class="bill-form hidden" data-form="${b.id}">
+        <label class="small muted">Name</label><input type="text" name="name" value="${esc(b.name)}">
+        <label class="small muted">Amount ($)</label><input type="number" name="amount" step="0.01" value="${(b.amount_cents / 100).toFixed(2)}">
+        <label class="small muted">Due day of month</label><input type="number" name="due_day" min="1" max="31" value="${b.due_day}">
+        <label class="small muted">Frequency</label>
+        <select name="frequency">${['monthly', 'weekly', 'biweekly', 'yearly', 'once'].map(fr => `<option value="${fr}"${b.frequency === fr ? ' selected' : ''}>${fr}</option>`).join('')}</select>
+        <label class="small muted">Next due date (optional override)</label><input type="date" name="next_due_date" value="${esc(b.next_due_date)}">
+        <label class="small muted">Account label (what it pulls from)</label><input type="text" name="autopay_from" value="${esc(b.autopay_from || '')}">
+        <label class="small muted">Category (paid detection)</label>
+        <select name="category_id"><option value="">—</option>${p.categories.map(c => `<option value="${c.id}"${b.category_id === c.id ? ' selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
+        <label class="small"><input type="checkbox" name="autopay" ${b.autopay ? 'checked' : ''}> Autopay</label>
+        <div class="stepper"><button type="submit">Save</button><button type="button" data-del="${b.id}">Delete</button></div>
+      </form></div>`;
+  }
+  html += `<h3>Add a bill</h3>
+    <form class="bill-form" data-form="new">
+      <label class="small muted">Name</label><input type="text" name="name" required>
+      <label class="small muted">Amount ($)</label><input type="number" name="amount" step="0.01" required>
+      <label class="small muted">Due day of month</label><input type="number" name="due_day" min="1" max="31" required>
+      <label class="small muted">Frequency</label>
+      <select name="frequency"><option>monthly</option><option>weekly</option><option>biweekly</option><option>yearly</option><option>once</option></select>
+      <label class="small muted">Next due date (optional override)</label><input type="date" name="next_due_date">
+      <label class="small muted">Account label (what it pulls from)</label><input type="text" name="autopay_from">
+      <label class="small muted">Category (paid detection)</label>
+      <select name="category_id"><option value="">—</option>${p.categories.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select>
+      <label class="small"><input type="checkbox" name="autopay"> Autopay</label>
+      <div class="stepper"><button type="submit">Add bill</button></div>
+    </form></div>`;
+  view.innerHTML = html;
+  view.querySelectorAll('.viewtoggle button').forEach(btn => {
+    btn.onclick = () => { state.budgetView = btn.dataset.v; renderBudget(); };
+  });
+  document.getElementById('pay-form').addEventListener('submit', async e => {
+    e.preventDefault();
+    const daysRaw = document.getElementById('pay-days').value.trim();
+    const args = {
+      date: document.getElementById('pay-date').value,
+      amount_cents: Math.round(parseFloat(document.getElementById('pay-amount').value || '0') * 100),
+      cadence: document.getElementById('pay-cadence').value,
+    };
+    if (daysRaw) args.month_days = daysRaw.split(',').map(s => parseInt(s, 10)).filter(n => n >= 1 && n <= 31);
+    try { await api('set_paycheck', args); renderPlan(); }
+    catch (err) { alert(err.message); }
+  });
+  view.querySelectorAll('[data-edit]').forEach(btn => {
+    btn.onclick = () => {
+      const form = view.querySelector(`[data-form="${btn.dataset.edit}"]`);
+      form.classList.toggle('hidden');
+    };
+  });
+  view.querySelectorAll('form.bill-form').forEach(form => {
+    form.addEventListener('submit', async e => {
+      e.preventDefault();
+      const f = new FormData(form);
+      const bill = {
+        name: f.get('name'),
+        amount_cents: Math.round(parseFloat(f.get('amount') || '0') * 100),
+        due_day: parseInt(f.get('due_day'), 10),
+        frequency: f.get('frequency') || 'monthly',
+        autopay: f.get('autopay') ? 1 : 0,
+        autopay_from: f.get('autopay_from') || null,
+        category_id: f.get('category_id') ? parseInt(f.get('category_id'), 10) : null,
+        next_due_date: f.get('next_due_date') || null,
+        active: 1,
+      };
+      try { await api('upsert_bill', { bill }); renderPlan(); }
+      catch (err) { alert(err.message); }
+    });
+  });
+  view.querySelectorAll('[data-del]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('Delete this bill?')) return;
+      const row = p.bills.find(b => String(b.id) === btn.dataset.del);
+      try { await api('delete_bill', { bill_id: row.id }); renderPlan(); }
+      catch (err) { alert(err.message); }
     };
   });
 }

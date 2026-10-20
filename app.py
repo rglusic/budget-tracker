@@ -34,6 +34,7 @@ READ_ACTIONS = {
     "get_overview": lambda c, a: actions.get_overview(c),
     "get_inbox": lambda c, a: actions.get_inbox(c),
     "get_budget": lambda c, a: actions.get_budget(c, a.get("month")),
+    "get_bill_plan": lambda c, a: actions.get_bill_plan(c),
     "get_bills": lambda c, a: actions.get_bills(c),
     "get_debts": lambda c, a: actions.get_debts(c),
 }
@@ -49,6 +50,10 @@ WRITE_ACTIONS = {
     "delete_bill": lambda c, a: actions.delete_bill(c, int(a["bill_id"])),
     "mark_bill_paid": lambda c, a: actions.mark_bill_paid(
         c, int(a["bill_id"]), a.get("date")),
+    "set_paycheck": lambda c, a: actions.set_paycheck(
+        c, a["date"], a.get("amount_cents"),
+        cadence=a.get("cadence"), month_days=a.get("month_days"),
+        interval_days=a.get("interval_days")),
     "upsert_debt": lambda c, a: actions.upsert_debt(c, a.get("debt", {})),
     "update_debt_balance": lambda c, a: actions.update_debt_balance(
         c, int(a["debt_id"]), int(a["balance_cents"])),

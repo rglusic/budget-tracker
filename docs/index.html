@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Budget Tracker — an AI-forward budget app</title>
-<meta name="description" content="Envelope-style budgeting from actual cash balances, with a categorization engine that learns your payees and a data model built for the AI era.">
+<meta name="description" content="Bills-first budgeting from actual cash balances: computed bill statuses, a safe-to-spend headline, and a day-by-day cash forecast projected from your own stored payday pattern.">
 <style>
   :root { --ink:#1c1c1e; --muted:#6e6e73; --line:#e5e5e2; --accent:#0a7aff; --bg:#fbfbfa; }
   * { box-sizing:border-box; }
@@ -29,7 +29,7 @@
 <div class="wrap">
 
   <h1>Budget Tracker</h1>
-  <p class="lede">An AI-forward budget app. Envelope-style budgeting from actual
+  <p class="lede">An AI-forward budget app. Bills-first budgeting from actual
   cash balances — with a categorization engine that learns your payees, and a
   data model designed to be read by an assistant, not just clicked by a human.</p>
 
@@ -47,8 +47,16 @@
     <p>New transactions land in an inbox. Categorize once and the app remembers the payee; next time it suggests the category before you tap anything.</p>
   </div>
   <div class="feat">
-    <strong>Envelope budgeting</strong>
-    <p>Assign dollars to categories each month. Available rolls over. Unassigned cash is always visible — and always real.</p>
+    <strong>Bills-first, not envelope-first</strong>
+    <p>Fixed bills don't need monthly assignment busywork — they get computed statuses from their due dates: Paid (green, with the date), Covered, Short (naming the paycheck that covers it), or On card. Only the categories where you actually decide spending stay manual envelopes.</p>
+  </div>
+  <div class="feat">
+    <strong>Safe to spend</strong>
+    <p>One headline number: cash on hand minus unpaid cash bills due before the next paycheck. Card bills are excluded — they never touch checking. A "This month" strip adds Cash on hand, Paid this month, and Still due this month.</p>
+  </div>
+  <div class="feat">
+    <strong>A forecast from your own schedule</strong>
+    <p>Your payday pattern is stored as data — anchor date plus pattern — never hardcoded. The plan view projects your cash balance day by day from paydays and bill due dates, and flags the lowest point before the next payday.</p>
   </div>
   <div class="feat">
     <strong>Bills board</strong>

@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     amount_cents INTEGER NOT NULL,           -- negative = outflow, positive = inflow
     category_id  INTEGER REFERENCES categories(id),
     pending      INTEGER NOT NULL DEFAULT 0,
+    is_transfer  INTEGER NOT NULL DEFAULT 0, -- 1 = internal transfer (excluded from "paid" totals)
     created_at   TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_txn_account ON transactions(account_id);
@@ -68,7 +69,9 @@ CREATE TABLE IF NOT EXISTS bills (
     due_day        INTEGER NOT NULL,          -- 1..31
     frequency      TEXT NOT NULL DEFAULT 'monthly',
     autopay        INTEGER NOT NULL DEFAULT 0,
-    autopay_from   TEXT,
+    autopay_from   TEXT,                      -- account label the bill pulls from (e.g. a checking or card label)
+    category_id    INTEGER REFERENCES categories(id),
+    next_due_date  TEXT,                      -- explicit next due date (YYYY-MM-DD); overrides due_day math, e.g. for overdue bills
     last_paid_date TEXT,                      -- YYYY-MM-DD
     notes          TEXT,
     active         INTEGER NOT NULL DEFAULT 1
@@ -97,10 +100,26 @@ def default_db_path() -> str:
     return os.environ.get("BUDGET_DB", os.path.join(os.path.dirname(__file__), "..", "budget.db"))
 
 
+# Columns added after the initial schema; applied to pre-existing databases.
+_MIGRATIONS = (
+    ("transactions", "is_transfer", "INTEGER NOT NULL DEFAULT 0"),
+    ("bills", "category_id", "INTEGER REFERENCES categories(id)"),
+    ("bills", "next_due_date", "TEXT"),
+)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    for table, column, decl in _MIGRATIONS:
+        cols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
 def get_db(path: str | None = None) -> sqlite3.Connection:
     """Open (and migrate) the SQLite database."""
     conn = sqlite3.connect(path or default_db_path())
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn

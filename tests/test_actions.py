@@ -125,5 +125,132 @@ def test_seed_and_categorize():
     print("ALL TESTS PASSED")
 
 
+def test_bill_plan():
+    import json
+    conn = fresh()
+    month = _TODAY.strftime("%Y-%m")
+    paycheck_date = (_TODAY + _dt.timedelta(days=20)).isoformat()
+    due_day = min(28, _TODAY.day + 5)  # due this month, before the paycheck
+    actions.import_seed(conn, {
+        "accounts": [
+            {"plaid_account_id": "acc-check-9", "name": "Test Checking",
+             "mask": "0009", "type": "checking", "balance_cents": 100000,
+             "last_synced_at": "2026-01-01T00:00:00Z"},
+        ],
+        "categories": [
+            {"name": "Test Food", "grp": "Frequent", "sort_order": 1},
+            {"name": "Test Fun", "grp": "Frequent", "sort_order": 2},
+            {"name": "Test Household", "grp": "Frequent", "sort_order": 3},
+            {"name": "Test Fuel", "grp": "Frequent", "sort_order": 4},
+            {"name": "Test Electric", "grp": "Bills", "sort_order": 5},
+        ],
+        "transactions": [
+            {"plaid_txn_id": "w-txn-1", "account_id": "acc-check-9",
+             "date": _TODAY.isoformat(), "merchant": "Test Electric Co",
+             "amount_cents": -8000, "category_id": "Test Electric"},
+            {"plaid_txn_id": "w-txn-2", "account_id": "acc-check-9",
+             "date": _TODAY.isoformat(), "merchant": "Test Move Money",
+             "amount_cents": -1500, "category_id": None, "is_transfer": 1},
+            {"plaid_txn_id": "w-txn-3", "account_id": "acc-check-9",
+             "date": _TODAY.isoformat(), "merchant": "Test Shop",
+             "amount_cents": -2000, "category_id": None},
+        ],
+        "bills": [
+            {"name": "Test Electric", "amount_cents": 8000, "due_day": due_day,
+             "frequency": "monthly", "autopay": 1,
+             "autopay_from": "Test Checking", "category": "Test Electric"},
+            {"name": "Test Water", "amount_cents": 5000, "due_day": due_day,
+             "frequency": "monthly", "autopay": 0, "autopay_from": "Test Checking"},
+            {"name": "Test Card Bill", "amount_cents": 4000, "due_day": due_day,
+             "frequency": "monthly", "autopay": 1,
+             "autopay_from": "Test Visa 1234"},
+            {"name": "Test Big Bill", "amount_cents": 200000, "due_day": due_day,
+             "frequency": "monthly", "autopay": 0, "autopay_from": "Test Checking"},
+        ],
+        "meta": {
+            "next_paycheck_date": paycheck_date,
+            "next_paycheck_amount_cents": "200000",
+            "paycheck_cadence": "biweekly",
+            "envelope_categories": json.dumps(
+                ["Test Food", "Test Fun", "Test Household", "Test Fuel"]),
+        },
+    })
+
+    # --- paycheck projection is data-driven (biweekly = +14d from anchor)
+    dates = [d.isoformat() for d in actions.paycheck_dates(conn, count=3)]
+    expect = [(_TODAY + _dt.timedelta(days=20 + 14 * i)).isoformat() for i in range(3)]
+    assert dates == expect, dates
+
+    plan = actions.get_bill_plan(conn)
+    by_name = {b["name"]: b for b in plan["bills"]}
+
+    # --- statuses: paid (matched txn) / covered / card / short
+    assert by_name["Test Electric"]["status"] == "paid", by_name["Test Electric"]
+    assert by_name["Test Electric"]["paid_date"] == _TODAY.isoformat()
+    assert by_name["Test Water"]["status"] == "covered", by_name["Test Water"]
+    assert by_name["Test Card Bill"]["status"] == "card", by_name["Test Card Bill"]
+    assert by_name["Test Big Bill"]["status"] == "short", by_name["Test Big Bill"]
+    assert by_name["Test Big Bill"]["covering_paycheck_date"] == paycheck_date
+
+    # --- This month strip: paid excludes transfers; still due skips paid bills
+    s = plan["summary"]
+    assert s["cash_on_hand_cents"] == 100000, s
+    assert s["paid_this_month_cents"] == 8000 + 2000, s  # transfer excluded
+    assert s["still_due_this_month_cents"] == 5000 + 4000 + 200000, s
+    # safe to spend: cash bills only (water + big), card bill excluded
+    assert s["safe_to_spend_cents"] == 100000 - 5000 - 200000, s
+
+    # --- envelopes: only the configured categories are envelopes
+    b = actions.get_budget(conn, month)
+    env_names = {e["name"] for e in b["envelopes"]}
+    assert env_names == {"Test Food", "Test Fun", "Test Household", "Test Fuel"}, env_names
+    all_names = {c["name"] for g in b["groups"] for c in g["categories"]}
+    assert "Test Electric" in all_names
+
+    # --- forecast: paycheck adds, bills subtract, lowest point reported
+    fc = plan["forecast"]
+    assert fc["start_cents"] == 100000
+    assert fc["lowest"] and fc["lowest"]["balance_cents"] < 100000
+    by_date = {p["date"]: p["balance_cents"] for p in fc["days"]}
+    assert by_date[paycheck_date] > by_date[(_TODAY + _dt.timedelta(days=19)).isoformat()]
+
+    # --- import merge: a real id arriving for an imported row merges in place
+    nxt = (_TODAY + _dt.timedelta(days=1)).isoformat()
+    res = actions.import_seed(conn, {"transactions": [
+        {"plaid_txn_id": "w-real-3", "account_id": "acc-check-9", "date": nxt,
+         "merchant": "Test Shop", "amount_cents": -2000, "pending": 1},
+    ]})
+    assert res["imported"].get("transactions_merged") == 1, res
+    n = conn.execute("SELECT COUNT(*) c FROM transactions").fetchone()["c"]
+    assert n == 3, f"merge must not duplicate; got {n} rows"
+    row = conn.execute("SELECT * FROM transactions WHERE plaid_txn_id='w-real-3'").fetchone()
+    assert row and row["pending"] == 1
+
+    # --- mark paid: last_paid set, next due advanced, status flips to paid
+    wid = conn.execute("SELECT id FROM bills WHERE name='Test Water'").fetchone()["id"]
+    actions.mark_bill_paid(conn, wid, _TODAY.isoformat())
+    plan2 = actions.get_bill_plan(conn)
+    water = [b for b in plan2["bills"] if b["name"] == "Test Water"][0]
+    assert water["status"] == "paid" and water["paid_date"] == _TODAY.isoformat(), water
+    assert water["next_due_date"] > _TODAY.isoformat(), water
+
+    # --- semi-monthly projection comes from the stored pattern, and the
+    # anchor takes its month slot (no anchor + pattern double-emit)
+    anchor = (_TODAY + _dt.timedelta(days=11)).isoformat()
+    actions.set_paycheck(conn, anchor, 300000, cadence="semi-monthly",
+                         month_days=[15, 31])
+    dates = [d.isoformat() for d in actions.paycheck_dates(conn, count=4)]
+    assert dates[0] == anchor, dates
+    months = {}
+    for d in dates:
+        months.setdefault(d[:7], []).append(int(d[8:]))
+    for mth, ds in months.items():
+        assert len(ds) == len(set(ds)), (mth, ds)
+        if len(ds) > 1:
+            assert min(abs(a - b) for a in ds for b in ds if a != b) >= 10, (mth, ds)
+    print("BILL PLAN TESTS PASSED")
+
+
 if __name__ == "__main__":
     test_seed_and_categorize()
+    test_bill_plan()

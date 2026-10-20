@@ -1,1 +1,1 @@
-"""Budget Tracker — personal envelope-budgeting web app (YNAB replacement)."""
+"""Budget Tracker — personal bills-first budgeting web app (YNAB replacement)."""

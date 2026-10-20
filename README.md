@@ -1,6 +1,6 @@
 # Budget Tracker
 
-An AI-forward personal budgeting app. Envelope-style budgeting from actual
+An AI-forward personal budgeting app. Bills-first budgeting from actual
 cash balances, with a categorization engine that learns your payees and a
 data model designed to be read and maintained by an AI assistant — not just
 clicked through by a human.
@@ -19,8 +19,18 @@ state lives in a plain SQLite file instead of a black box.
 - **Inbox that learns.** New and uncategorized transactions land in an inbox.
   Categorize once and the app remembers the payee — next time it suggests the
   category before you tap anything. Suggestions get better the more you use it.
-- **Envelope budgeting.** Assign dollars to categories per month. Available
-  rolls over month to month. Unassigned cash is always visible and always real.
+- **Bills-first budgeting.** Most money is fixed obligations, so bills get
+  computed statuses from their due dates instead of manual assignment: Paid
+  (green, with the date) / Covered / Short (naming the paycheck that covers
+  it) / On card. A "This month" strip shows Cash on hand, Paid this month,
+  and Still due this month, plus one headline number: **Safe to spend** =
+  cash minus unpaid cash bills due before the next paycheck. Only the
+  categories where you actually make spending decisions stay manual
+  green/red envelopes.
+- **Plan view with a forecast.** Paydays are data, not code: the schedule
+  lives in settings (an anchor date plus a stored pattern), and the app
+  projects checking balance day by day from paydays and bill due dates —
+  including the lowest point before the next payday.
 - **Bills board.** Every bill with its due date, autopay status, and last-paid
   date. A "due before next paycheck" strip answers the only question that
   matters mid-month.
@@ -97,10 +107,12 @@ All endpoints are `POST /api/<action>` with a JSON body:
 | `categorize_transaction` | `txn_id`, `category_id` | Categorize + learn/refresh payee rule |
 | `assign_budget` | `month`, `category_id`, `amount_cents` | Delta to assigned (may be negative) |
 | `upsert_bill` / `delete_bill` / `mark_bill_paid` | bill fields / `bill_id` / `bill_id`, `date` | Manage bills |
+| `set_paycheck` | `date`, `amount_cents`, `cadence`, `month_days` / `interval_days` | Store the payday anchor + schedule pattern |
 | `upsert_debt` / `update_debt_balance` | debt fields / `debt_id`, `balance_cents` | Manage debts |
 | `get_overview` | — | Cash, debt, net, unassigned, accounts, bills due before payday |
 | `get_inbox` | — | Pending + uncategorized, with suggestions |
-| `get_budget` | `month` | Groups → Assigned / Spent / Available |
+| `get_budget` | `month` | Month summary strip, bill statuses, envelope Assigned / Spent / Available |
+| `get_bill_plan` | — | Paycheck schedule, bill statuses, day-by-day cash forecast |
 | `get_bills` | — | Bills sorted by next due date |
 | `get_debts` | — | Debts in payoff order + totals |
 
@@ -112,6 +124,10 @@ Read actions also accept GET.
 - **Timestamps stored UTC**, displayed in America/Los_Angeles.
 - **Available = assigned − spent + rollover**, with full rollover of the prior
   month's available. Unassigned = on-budget cash − Σ available.
+- **Schedules are data.** Payday patterns (semi-monthly, biweekly, weekly,
+  monthly) are stored as a pattern + anchor in the database and projected
+  from there; which categories are manual envelopes is a stored list too.
+  Nothing about your job, your bills, or your paydays exists in the source.
 - **No personal data in this repo.** Schema, code, docs, and synthetic test
   fixtures only. Real data lives in `seed/` (gitignored, local-only) and the
   SQLite file (gitignored).
