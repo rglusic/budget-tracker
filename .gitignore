@@ -1,0 +1,24 @@
+# Local-only: never committed or pushed.
+# Ryan's real financial data lives here (transactions, bills, debts, balances).
+seed/
+
+# SQLite databases (local state, never in the repo)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Secrets: Plaid credentials and any other keys live in the environment,
+# never in files. If you use a .env file for local dev, keep it out of git.
+.env
+.env.*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+venv/
+.venv/
+.pytest_cache/

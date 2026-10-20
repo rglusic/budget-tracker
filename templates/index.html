@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Budget Tracker</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <h1>Budget Tracker</h1>
+  <button id="sync-btn" title="Refresh from bank">Sync</button>
+</header>
+<main id="view"></main>
+<nav id="tabs">
+  <button data-tab="overview" class="active">Overview</button>
+  <button data-tab="inbox">Inbox <span id="inbox-badge" class="badge hidden"></span></button>
+  <button data-tab="budget">Budget</button>
+  <button data-tab="bills">Bills</button>
+  <button data-tab="debts">Debts</button>
+</nav>
+<script src="/static/app.js"></script>
+</body>
+</html>
